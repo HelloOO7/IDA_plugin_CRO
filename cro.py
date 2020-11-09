@@ -8,9 +8,6 @@ CRO_FORMAT_NAME   = "CRO (CTR relocatable object)"
 def accept_file(li, n):
 
     # we support only one format per file
-    if n > 0:
-        return 0
-
     # check the 3DSX signature
     li.seek(0x80)
     if li.read(4) == CRO_SIGNATURE:
@@ -34,12 +31,18 @@ def do_import_name(ea, name):
     if idaapi.get_long(ea - 4) == 0xE51FF004: # "ldr pc, [pc, #-4]"
         idaapi.do_name_anyway(ea - 4, name)
 
-def do_import_batch(li, segmentTable, batchOffset, name):
+def do_import_batch(li, segmentTable, batchOffset, fullName, addr=-1):
     li.seek(batchOffset)
     while True:
         target, patch_type, is_end, is_resolved, _, shift = struct.unpack("<IBBBBI", li.read(12))
         target_offset = DecodeTag(segmentTable, target)
-        do_import_name(target_offset, name)
+        if addr == -1:
+            do_import_name(target_offset, fullName)
+        else:
+            shiftFinal = shift
+            if (patch_type == 3):
+                shiftFinal -= target_offset
+            do_import_name(target_offset, "%s_%08X"%(fullName, addr + shiftFinal))
         if is_end != 0:
             break
 
@@ -119,11 +122,17 @@ def load_cro(li, is_crs):
         SegmentOffset, SegmentSize, SegmentType = struct.unpack("<III", li.read(12))
         if SegmentType == 3:
             SegmentOffset = 0x08000000
-            idaapi.enable_flags(base + SegmentOffset, base + SegmentOffset + SegmentSize, idaapi.STT_VA)
+            if not is_crs:
+                idaapi.enable_flags(base + SegmentOffset, base + SegmentOffset + SegmentSize, idaapi.STT_VA)
 
         segmentAddress.append(base + SegmentOffset)
         if SegmentSize :
-            idaapi.add_segm(0, segmentAddress[i], segmentAddress[i] + SegmentSize, segmentDic[SegmentType][1], segmentDic[SegmentType][0])
+            if not is_crs:
+                idaapi.add_segm(0, segmentAddress[i], segmentAddress[i] + SegmentSize, segmentDic[SegmentType][1], segmentDic[SegmentType][0])
+
+    crsReloc = 0
+    if (is_crs):
+        crsReloc = 0x180
 
     # do internal relocations
     li.seek(InternalPatchTableOffset)
@@ -190,9 +199,14 @@ def load_cro(li, is_crs):
             index, batchOffset = i
             do_import_batch(li, segmentAddress, batchOffset, "%s_%d"%(mname, index))
 
+        staticReloc = 0
+        if (mname == "|static|"):
+            staticReloc = -0x180
+
         for i in anonymouses:
             tag, batchOffset = i
-            do_import_batch(li, segmentAddress, batchOffset, "%s_%08X"%(mname, tag))
+                
+            do_import_batch(li, segmentAddress, batchOffset, mname, DecodeTag(segmentAddress, tag) + crsReloc + staticReloc)
 
     # export
     li.seek(ExportNamedSymbolTableOffset)
